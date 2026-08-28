@@ -15,9 +15,9 @@ jobs:
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
-      - name: Verify Update 6 source ZIP
+      - name: Verify Update 7 source ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -27,7 +27,7 @@ jobs:
           }
           sha256sum Vireo_Android_Source_For_GitHub.zip | tee source-sha256.txt
 
-      - name: Extract Update 6 project
+      - name: Extract Update 7 project
         shell: bash
         run: |
           set -euo pipefail
@@ -37,10 +37,10 @@ jobs:
           test -s vireo_android_src/settings.gradle
           test -s vireo_android_src/build.gradle
           test -s vireo_android_src/app/build.gradle
-          grep -Fq "update6-normalized-probe-selftest" vireo_android_src/app/build.gradle
+          grep -Fq "update7-android16-back-saf-lint-fix" vireo_android_src/app/build.gradle
 
       - name: Set up Java 17
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '17'
@@ -50,23 +50,17 @@ jobs:
         with:
           python-version: '3.13'
 
-      - name: Verify and expose exact Chaquopy build Python
+      - name: Verify exact Chaquopy build Python
         shell: bash
         run: |
           set -euo pipefail
           PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
-          python - <<'PY'
-          import sys
-          assert sys.version_info[:2] == (3, 13), sys.version
-          print("Chaquopy build Python:", sys.executable)
-          print("Version:", sys.version)
-          PY
+          test "$(python -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" = "3.13"
           mkdir -p "$RUNNER_TEMP/vireo-python-bin"
           ln -sf "$PYTHON_BIN" "$RUNNER_TEMP/vireo-python-bin/python3.13"
           ln -sf "$PYTHON_BIN" "$RUNNER_TEMP/vireo-python-bin/python3"
           echo "$RUNNER_TEMP/vireo-python-bin" >> "$GITHUB_PATH"
-          echo "VIREO_CHAQUOPY_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
-          "$RUNNER_TEMP/vireo-python-bin/python3.13" --version
+          python3.13 --version
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
@@ -78,7 +72,6 @@ jobs:
           yes | sdkmanager --licenses >/dev/null 2>&1 || true
           sdkmanager --install \
             "platform-tools" \
-            "platforms;android-35" \
             "platforms;android-36" \
             "build-tools;35.0.0"
           sdkmanager --list_installed | tee android-sdk-installed.txt
@@ -94,18 +87,7 @@ jobs:
           path: ~/.android/debug.keystore
           key: vireo-android-debug-keystore-v1
 
-      - name: Confirm Python 3.13 is visible to Chaquopy
-        shell: bash
-        run: |
-          set -euo pipefail
-          command -v python3.13
-          python3.13 --version
-          test "$(python3.13 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" = "3.13"
-
-      # Build first. Host-side Python/FFmpeg diagnostics must never prevent a
-      # valid Android APK from being compiled simply because the runner image
-      # differs from the Android runtime.
-      - name: Build Update 6 APK
+      - name: Build Update 7 APK
         working-directory: vireo_android_src
         shell: bash
         run: |
@@ -120,28 +102,13 @@ jobs:
           set -euo pipefail
           gradle --no-daemon :app:lintDebug 2>&1 | tee ../vireo-lint.log
 
-      - name: Verify protected source contracts
+      - name: Verify protected Android source contracts
         working-directory: vireo_android_src
         shell: bash
         run: |
           set -euo pipefail
           python3 -m compileall -q app/src/main/python
           python3 tools/verify_android_port.py | tee ../vireo-static-contract.log
-
-      # This test exercises the desktop/host FFmpeg executable, not the APK's
-      # embedded Android FFmpegKit. Keep it as diagnostics only. The app itself
-      # performs a real on-device FFmpeg/FFprobe self-test before paid API work.
-      - name: Host render smoke diagnostic
-        if: always()
-        working-directory: vireo_android_src
-        shell: bash
-        continue-on-error: true
-        run: |
-          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
-            python3 tools/render_smoke_test.py 2>&1 | tee ../vireo-host-render-smoke.log
-          else
-            echo "Host ffmpeg/ffprobe unavailable; skipped (not an Android APK failure)." | tee ../vireo-host-render-smoke.log
-          fi
 
       - name: Verify APK manifest and required native libraries
         shell: bash
@@ -152,7 +119,7 @@ jobs:
           test -x "$AAPT"
           "$AAPT" dump badging "$APK" | tee apk-badging.txt
           grep -Fq "targetSdkVersion:'36'" apk-badging.txt
-          grep -Fq "versionCode='6'" apk-badging.txt
+          grep -Fq "versionCode='7'" apk-badging.txt
           unzip -l "$APK" | tee apk-contents.txt >/dev/null
           for required in \
             'lib/arm64-v8a/libffmpegkit.so' \
@@ -165,19 +132,31 @@ jobs:
             }
           done
 
+      - name: Host render smoke diagnostic
+        if: always()
+        working-directory: vireo_android_src
+        shell: bash
+        continue-on-error: true
+        run: |
+          if command -v ffmpeg >/dev/null 2>&1 && command -v ffprobe >/dev/null 2>&1; then
+            python3 tools/render_smoke_test.py 2>&1 | tee ../vireo-host-render-smoke.log
+          else
+            echo "Host ffmpeg/ffprobe unavailable; skipped (not an Android APK failure)." | tee ../vireo-host-render-smoke.log
+          fi
+
       - name: Rename APK
         shell: bash
         run: |
           set -euo pipefail
           cp vireo_android_src/app/build/outputs/apk/debug/app-debug.apk \
-             Vireo-Video-Studio-Android13-16-Update6.apk
-          sha256sum Vireo-Video-Studio-Android13-16-Update6.apk | tee apk-sha256.txt
+             Vireo-Video-Studio-Android13-16-Update7.apk
+          sha256sum Vireo-Video-Studio-Android13-16-Update7.apk | tee apk-sha256.txt
 
       - name: Upload Vireo APK
         uses: actions/upload-artifact@v4
         with:
           name: Vireo-Video-Studio-APK
-          path: Vireo-Video-Studio-Android13-16-Update6.apk
+          path: Vireo-Video-Studio-Android13-16-Update7.apk
           if-no-files-found: error
           retention-days: 30
 
