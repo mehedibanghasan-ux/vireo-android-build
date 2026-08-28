@@ -11,7 +11,7 @@ permissions:
 jobs:
   build-apk:
     runs-on: ubuntu-latest
-    timeout-minutes: 75
+    timeout-minutes: 90
 
     steps:
       - name: Get uploaded files
@@ -26,7 +26,7 @@ jobs:
           }
           sha256sum Vireo_Android_Source_For_GitHub.zip
 
-      - name: Extract Vireo Android Update 5 project
+      - name: Extract Vireo Android Update 6 project
         shell: bash
         run: |
           rm -rf vireo_android_src
@@ -34,7 +34,7 @@ jobs:
           unzip -q Vireo_Android_Source_For_GitHub.zip -d vireo_android_src
           test -f vireo_android_src/settings.gradle
           test -f vireo_android_src/app/build.gradle
-          grep -q "update5-ffprobe-fix" vireo_android_src/app/build.gradle
+          grep -q "update6-normalized-probe-selftest" vireo_android_src/app/build.gradle
 
       - name: Set up Java 17
         uses: actions/setup-java@v4
@@ -52,8 +52,7 @@ jobs:
 
       - name: Accept Android SDK licenses
         shell: bash
-        run: |
-          yes | sdkmanager --licenses >/dev/null 2>&1 || true
+        run: yes | sdkmanager --licenses >/dev/null 2>&1 || true
 
       - name: Install Android SDK 36
         shell: bash
@@ -70,13 +69,13 @@ jobs:
         with:
           gradle-version: '8.13'
 
-      - name: Reuse Vireo debug signing key across future builds
+      - name: Reuse Vireo debug signing key across builds
         uses: actions/cache@v4
         with:
           path: ~/.android/debug.keystore
           key: vireo-android-debug-keystore-v1
 
-      - name: Run Vireo Update 5 protected-contract checks
+      - name: Run Vireo Update 6 protected-contract checks
         working-directory: vireo_android_src
         shell: bash
         run: |
@@ -84,8 +83,14 @@ jobs:
           python -m compileall -q app/src/main/python
           python tools/verify_android_port.py
           PYTHONPATH="$PWD/app/src/main/python" pytest -q port_tests/test_android_port_contracts.py
+          python tools/render_smoke_test.py
 
-      - name: Build installable Update 5 APK
+      - name: Android lint
+        working-directory: vireo_android_src
+        shell: bash
+        run: gradle --no-daemon :app:lintDebug
+
+      - name: Build installable Update 6 APK
         working-directory: vireo_android_src
         shell: bash
         run: |
@@ -93,25 +98,54 @@ jobs:
           gradle --no-daemon --stacktrace --refresh-dependencies :app:assembleDebug 2>&1 | tee ../vireo-apk-build.log
           test -s app/build/outputs/apk/debug/app-debug.apk
 
+      - name: Verify APK package contents
+        shell: bash
+        run: |
+          set -euo pipefail
+          APK="vireo_android_src/app/build/outputs/apk/debug/app-debug.apk"
+          "$ANDROID_HOME/build-tools/35.0.0/aapt" dump badging "$APK" | tee apk-badging.txt
+          grep -q "targetSdkVersion:'36'" apk-badging.txt
+          grep -q "versionCode='6'" apk-badging.txt
+          unzip -l "$APK" > apk-contents.txt
+          grep -q 'lib/arm64-v8a/libffmpegkit.so' apk-contents.txt
+          grep -q 'lib/arm64-v8a/libavcodec.so' apk-contents.txt
+          grep -q 'lib/arm64-v8a/libavfilter.so' apk-contents.txt
+          grep -q 'lib/arm64-v8a/libpython3.13.so' apk-contents.txt
+          rm -rf apk_check && mkdir -p apk_check
+          cd apk_check
+          unzip -q "../$APK" lib/arm64-v8a/libavcodec.so lib/arm64-v8a/libavfilter.so
+          strings lib/arm64-v8a/libavcodec.so > avcodec-strings.txt
+          strings lib/arm64-v8a/libavfilter.so > avfilter-strings.txt
+          grep -q 'mp3float' avcodec-strings.txt
+          grep -q 'AAC decoder' avcodec-strings.txt
+          grep -q '^subtitles$' avfilter-strings.txt
+          grep -q '^silencedetect$' avfilter-strings.txt
+          grep -q '^afftdn$' avfilter-strings.txt
+          grep -q '^alimiter$' avfilter-strings.txt
+
       - name: Rename APK
         if: success()
         shell: bash
-        run: cp vireo_android_src/app/build/outputs/apk/debug/app-debug.apk Vireo-Video-Studio-Android13-16-Update5.apk
+        run: cp vireo_android_src/app/build/outputs/apk/debug/app-debug.apk Vireo-Video-Studio-Android13-16-Update6.apk
 
       - name: Upload Vireo APK
         if: success()
         uses: actions/upload-artifact@v4
         with:
           name: Vireo-Video-Studio-APK
-          path: Vireo-Video-Studio-Android13-16-Update5.apk
+          path: Vireo-Video-Studio-Android13-16-Update6.apk
           if-no-files-found: error
           retention-days: 30
 
-      - name: Upload build log if build fails
+      - name: Upload build diagnostics if build fails
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: Vireo-build-log
-          path: vireo-apk-build.log
+          path: |
+            vireo-apk-build.log
+            apk-badging.txt
+            vireo_android_src/app/build/reports/lint-results-debug.html
+            vireo_android_src/app/build/reports/lint-results-debug.txt
           if-no-files-found: ignore
           retention-days: 7
