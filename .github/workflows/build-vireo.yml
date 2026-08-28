@@ -17,7 +17,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v7
 
-      - name: Verify Update 8 source ZIP
+      - name: Verify Update 9 source ZIP
         shell: bash
         run: |
           set -euo pipefail
@@ -27,7 +27,7 @@ jobs:
           }
           sha256sum Vireo_Android_Source_For_GitHub.zip | tee source-sha256.txt
 
-      - name: Extract Update 8 project
+      - name: Extract Update 9 project
         shell: bash
         run: |
           set -euo pipefail
@@ -38,21 +38,21 @@ jobs:
           test -s vireo_android_src/build.gradle
           test -s vireo_android_src/gradle.properties
           test -s vireo_android_src/app/build.gradle
-          grep -Fq "update8-androidx-build-config-fix" vireo_android_src/app/build.gradle
+          grep -Fq "update9-ffmpeg-runtime-dependency-fix" vireo_android_src/app/build.gradle
 
-      - name: Preflight AndroidX and Chaquopy build configuration
+      - name: Preflight Android build configuration
         shell: bash
         run: |
           set -euo pipefail
           grep -Eq '^android\.useAndroidX[[:space:]]*=[[:space:]]*true[[:space:]]*$' vireo_android_src/gradle.properties
-          if grep -Eq '^android\.useAndroidX[[:space:]]*=[[:space:]]*false[[:space:]]*$' vireo_android_src/gradle.properties; then
-            echo "ERROR: AndroidX is explicitly disabled."
-            exit 1
-          fi
+          ! grep -Eq '^android\.useAndroidX[[:space:]]*=[[:space:]]*false[[:space:]]*$' vireo_android_src/gradle.properties
           grep -Fq "androidx.activity:activity:1.13.0" vireo_android_src/app/build.gradle
           grep -Fq 'buildPython("python3.13")' vireo_android_src/app/build.gradle
-          grep -Fq "versionCode 8" vireo_android_src/app/build.gradle
-          echo "Update 8 AndroidX/Chaquopy preflight OK." | tee vireo-build-config-preflight.log
+          grep -Fq "versionCode 9" vireo_android_src/app/build.gradle
+          grep -Fq "dev.ffmpegkit-maintained:ffmpeg-kit-full-gpl:8.1.7" vireo_android_src/app/build.gradle
+          grep -Fq "com.arthenica:smart-exception-java:0.2.1" vireo_android_src/app/build.gradle
+          grep -Fq "com.arthenica:smart-exception-common:0.2.1" vireo_android_src/app/build.gradle
+          echo "Update 9 build configuration preflight OK." | tee vireo-build-config-preflight.log
 
       - name: Set up Java 17
         uses: actions/setup-java@v5
@@ -78,6 +78,13 @@ jobs:
           echo "$RUNNER_TEMP/vireo-python-bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/vireo-python-bin/python3.13" --version | tee python-version.txt
 
+      - name: Install CI-only Python test tools
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3.13 -m pip install --disable-pip-version-check --no-input pytest==9.0.2
+          python3.13 -m pytest --version | tee pytest-version.txt
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
         with:
@@ -87,8 +94,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          sdkmanager --install             "platform-tools"             "platforms;android-36"             "build-tools;35.0.0"
+          sdkmanager --install \
+            "platform-tools" \
+            "platforms;android-36" \
+            "build-tools;35.0.0"
           sdkmanager --list_installed | tee android-sdk-installed.txt
+          APKANALYZER="$(find "$ANDROID_HOME/cmdline-tools" -type f -name apkanalyzer -perm -111 | head -n 1)"
+          test -n "$APKANALYZER"
+          echo "$APKANALYZER" | tee apkanalyzer-path.txt
 
       - name: Set up Gradle 8.13
         uses: gradle/actions/setup-gradle@v6
@@ -108,8 +121,25 @@ jobs:
           set -euo pipefail
           python3.13 -m compileall -q app/src/main/python
           python3.13 tools/verify_android_port.py | tee ../vireo-static-contract.log
+          python3.13 -m pytest -q port_tests | tee ../vireo-port-tests.log
 
-      - name: Build Update 8 APK
+      - name: Resolve and verify runtime dependency graph
+        working-directory: vireo_android_src
+        shell: bash
+        run: |
+          set -euo pipefail
+          gradle --no-daemon --refresh-dependencies :app:dependencies --configuration debugRuntimeClasspath \
+            2>&1 | tee ../vireo-runtime-dependencies.log
+          grep -Fq "com.arthenica:smart-exception-java:0.2.1" ../vireo-runtime-dependencies.log || {
+            echo "ERROR: smart-exception-java is not on debugRuntimeClasspath."
+            exit 1
+          }
+          grep -Fq "com.arthenica:smart-exception-common:0.2.1" ../vireo-runtime-dependencies.log || {
+            echo "ERROR: smart-exception-common is not on debugRuntimeClasspath."
+            exit 1
+          }
+
+      - name: Build Update 9 APK
         working-directory: vireo_android_src
         shell: bash
         run: |
@@ -124,7 +154,7 @@ jobs:
           set -euo pipefail
           gradle --no-daemon --stacktrace :app:lintDebug 2>&1 | tee ../vireo-lint.log
 
-      - name: Verify APK manifest and required native libraries
+      - name: Verify APK manifest native libraries and Java runtime classes
         shell: bash
         run: |
           set -euo pipefail
@@ -133,14 +163,29 @@ jobs:
           test -x "$AAPT"
           "$AAPT" dump badging "$APK" | tee apk-badging.txt
           grep -Fq "targetSdkVersion:'36'" apk-badging.txt
-          grep -Fq "versionCode='8'" apk-badging.txt
+          grep -Fq "versionCode='9'" apk-badging.txt
+
           unzip -l "$APK" | tee apk-contents.txt >/dev/null
-          for required in             'lib/arm64-v8a/libffmpegkit.so'             'lib/arm64-v8a/libavcodec.so'             'lib/arm64-v8a/libavfilter.so'             'lib/arm64-v8a/libpython3.13.so'; do
+          for required in \
+            'lib/arm64-v8a/libffmpegkit.so' \
+            'lib/arm64-v8a/libavcodec.so' \
+            'lib/arm64-v8a/libavfilter.so' \
+            'lib/arm64-v8a/libpython3.13.so'; do
             grep -Fq "$required" apk-contents.txt || {
               echo "ERROR: APK is missing required native library: $required"
               exit 1
             }
           done
+
+          # Critical runtime check: a mere reference is insufficient. The class
+          # must be DEFINED in the APK DEX or FFmpegKitConfig will crash on device.
+          APKANALYZER="$(cat apkanalyzer-path.txt)"
+          test -x "$APKANALYZER"
+          "$APKANALYZER" dex packages --defined-only "$APK" | tee apk-defined-dex-classes.txt
+          grep -Fq "com.arthenica.smartexception.java.Exceptions" apk-defined-dex-classes.txt || {
+            echo "ERROR: APK does not define com.arthenica.smartexception.java.Exceptions."
+            exit 1
+          }
 
       - name: Host render smoke diagnostic
         if: always()
@@ -158,14 +203,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp vireo_android_src/app/build/outputs/apk/debug/app-debug.apk              Vireo-Video-Studio-Android13-16-Update8.apk
-          sha256sum Vireo-Video-Studio-Android13-16-Update8.apk | tee apk-sha256.txt
+          cp vireo_android_src/app/build/outputs/apk/debug/app-debug.apk \
+             Vireo-Video-Studio-Android13-16-Update9.apk
+          sha256sum Vireo-Video-Studio-Android13-16-Update9.apk | tee apk-sha256.txt
 
       - name: Upload Vireo APK
         uses: actions/upload-artifact@v6
         with:
           name: Vireo-Video-Studio-APK
-          path: Vireo-Video-Studio-Android13-16-Update8.apk
+          path: Vireo-Video-Studio-Android13-16-Update9.apk
           if-no-files-found: error
           retention-days: 30
 
@@ -178,13 +224,18 @@ jobs:
             source-sha256.txt
             vireo-build-config-preflight.log
             python-version.txt
+            pytest-version.txt
             android-sdk-installed.txt
+            apkanalyzer-path.txt
             vireo-static-contract.log
+            vireo-port-tests.log
+            vireo-runtime-dependencies.log
             vireo-apk-build.log
             vireo-lint.log
             vireo-host-render-smoke.log
             apk-badging.txt
             apk-contents.txt
+            apk-defined-dex-classes.txt
             apk-sha256.txt
             vireo_android_src/app/build/reports/lint-results-debug.html
             vireo_android_src/app/build/reports/lint-results-debug.txt
