@@ -78,12 +78,36 @@ jobs:
           echo "$RUNNER_TEMP/vireo-python-bin" >> "$GITHUB_PATH"
           "$RUNNER_TEMP/vireo-python-bin/python3.13" --version | tee python-version.txt
 
-      - name: Install CI-only Python test tools
+      - name: Mirror Vireo Python runtime dependencies into CI
         shell: bash
         run: |
           set -euo pipefail
+          # Keep CI and the APK's Chaquopy Python environment in sync.
+          # Read every `install 'package==version'` entry from app/build.gradle
+          # instead of maintaining a second dependency list by hand.
+          python3.13 - <<'PY'
+          import re
+          from pathlib import Path
+          gradle = Path("vireo_android_src/app/build.gradle").read_text(encoding="utf-8")
+          deps = re.findall(r"^\s*install\s+['\"]([^'\"]+)['\"]\s*$", gradle, flags=re.M)
+          if not deps:
+              raise SystemExit("ERROR: No Chaquopy pip dependencies found in app/build.gradle")
+          Path("ci-runtime-requirements.txt").write_text("\n".join(deps) + "\n", encoding="utf-8")
+          print("Mirrored Chaquopy runtime dependencies:")
+          for dep in deps:
+              print("  " + dep)
+          PY
+
           python3.13 -m pip install --disable-pip-version-check --no-input pytest==9.0.2
+          python3.13 -m pip install --disable-pip-version-check --no-input -r ci-runtime-requirements.txt
+          python3.13 -m pip check | tee ci-pip-check.txt
           python3.13 -m pytest --version | tee pytest-version.txt
+          python3.13 - <<'PY' | tee ci-python-runtime-deps.txt
+          import requests, PIL, dotenv
+          print("requests=" + requests.__version__)
+          print("Pillow=" + PIL.__version__)
+          print("python-dotenv=present")
+          PY
 
       - name: Set up Android SDK
         uses: android-actions/setup-android@v4
@@ -225,6 +249,9 @@ jobs:
             vireo-build-config-preflight.log
             python-version.txt
             pytest-version.txt
+            ci-runtime-requirements.txt
+            ci-python-runtime-deps.txt
+            ci-pip-check.txt
             android-sdk-installed.txt
             apkanalyzer-path.txt
             vireo-static-contract.log
