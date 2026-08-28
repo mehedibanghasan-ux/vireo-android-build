@@ -45,6 +45,29 @@ jobs:
           distribution: temurin
           java-version: '17'
 
+      - name: Set up Python 3.13 for Chaquopy
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Verify and expose exact Chaquopy build Python
+        shell: bash
+        run: |
+          set -euo pipefail
+          PYTHON_BIN="$(python -c 'import sys; print(sys.executable)')"
+          python - <<'PY'
+          import sys
+          assert sys.version_info[:2] == (3, 13), sys.version
+          print("Chaquopy build Python:", sys.executable)
+          print("Version:", sys.version)
+          PY
+          mkdir -p "$RUNNER_TEMP/vireo-python-bin"
+          ln -sf "$PYTHON_BIN" "$RUNNER_TEMP/vireo-python-bin/python3.13"
+          ln -sf "$PYTHON_BIN" "$RUNNER_TEMP/vireo-python-bin/python3"
+          echo "$RUNNER_TEMP/vireo-python-bin" >> "$GITHUB_PATH"
+          echo "VIREO_CHAQUOPY_PYTHON=$PYTHON_BIN" >> "$GITHUB_ENV"
+          "$RUNNER_TEMP/vireo-python-bin/python3.13" --version
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
 
@@ -70,6 +93,14 @@ jobs:
         with:
           path: ~/.android/debug.keystore
           key: vireo-android-debug-keystore-v1
+
+      - name: Confirm Python 3.13 is visible to Chaquopy
+        shell: bash
+        run: |
+          set -euo pipefail
+          command -v python3.13
+          python3.13 --version
+          test "$(python3.13 -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" = "3.13"
 
       # Build first. Host-side Python/FFmpeg diagnostics must never prevent a
       # valid Android APK from being compiled simply because the runner image
